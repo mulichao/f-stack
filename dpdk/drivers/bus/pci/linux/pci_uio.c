@@ -368,8 +368,48 @@ error:
 }
 
 #if defined(RTE_ARCH_X86)
-int
-pci_uio_ioport_map(struct rte_pci_device *dev, int bar,
+static int pci_uio_ioport_flags(struct rte_pci_device *dev, int bar,
+                   uint64_t *flags)
+{
+	FILE *f;
+        char buf[BUFSIZ];
+        char filename[PATH_MAX];
+        uint64_t phys_addr, end_addr;
+        int i;
+
+        /* open and read addresses of the corresponding resource in sysfs */
+        snprintf(filename, sizeof(filename), "%s/" PCI_PRI_FMT "/resource",
+                rte_pci_get_sysfs_path(), dev->addr.domain, dev->addr.bus,
+                dev->addr.devid, dev->addr.function);
+        f = fopen(filename, "r");
+        if (f == NULL) {
+                RTE_LOG(ERR, EAL, "Cannot open sysfs resource: %s\n",
+                        strerror(errno));
+                return -1;
+        }
+        for (i = 0; i < bar + 1; i++) {
+                if (fgets(buf, sizeof(buf), f) == NULL) {
+                        RTE_LOG(ERR, EAL, "Cannot read sysfs resource\n");
+                        goto error;
+                }
+        }
+
+        if (pci_parse_one_sysfs_resource(buf, sizeof(buf), &phys_addr,
+                        &end_addr, flags) < 0){
+                RTE_LOG(ERR, EAL, "Cannot parse  resource\n");
+                goto error;
+	}
+
+	fclose(f);
+	return 0;
+error:
+	fclose(f);
+	return -1;
+}
+
+
+static int
+pci_uio_ioport_iobar(struct rte_pci_device *dev, int bar,
 		   struct rte_pci_ioport *p)
 {
 	char dirname[PATH_MAX];
@@ -418,6 +458,106 @@ pci_uio_ioport_map(struct rte_pci_device *dev, int bar,
 	p->base = start;
 	p->len = 0;
 	return 0;
+}
+
+static int pci_uio_ioport_membar(struct rte_pci_device *dev, int bar,
+		   struct rte_pci_ioport *p)
+{
+	FILE *f;
+	char buf[BUFSIZ];
+	char filename[PATH_MAX];
+	uint64_t phys_addr, end_addr, flags;
+	int fd, i;
+	void *addr;
+
+	/* open and read addresses of the corresponding resource in sysfs */
+	snprintf(filename, sizeof(filename), "%s/" PCI_PRI_FMT "/resource",
+		rte_pci_get_sysfs_path(), dev->addr.domain, dev->addr.bus,
+		dev->addr.devid, dev->addr.function);
+	f = fopen(filename, "r");
+	if (f == NULL) {
+		RTE_LOG(ERR, EAL, "Cannot open sysfs resource: %s\n",
+			strerror(errno));
+		return -1;
+	}
+	for (i = 0; i < bar + 1; i++) {
+		if (fgets(buf, sizeof(buf), f) == NULL) {
+			RTE_LOG(ERR, EAL, "Cannot read sysfs resource\n");
+			goto error;
+		}
+	}
+	
+	if (pci_parse_one_sysfs_resource(buf, sizeof(buf), &phys_addr,
+			&end_addr, &flags) < 0)
+		goto error;
+	if ((flags & IORESOURCE_MEM) == 0) {
+		RTE_LOG(ERR, EAL, "BAR %d is not an MEM  resource\n", bar);
+		goto error;
+	}
+	snprintf(filename, sizeof(filename), "%s/" PCI_PRI_FMT "/resource%d",
+		rte_pci_get_sysfs_path(), dev->addr.domain, dev->addr.bus,
+		dev->addr.devid, dev->addr.function, bar);
+
+	/* mmap the pci resource */
+	fd = open(filename, O_RDWR);
+	if (fd < 0) {
+		RTE_LOG(ERR, EAL, "Cannot open %s: %s\n", filename,
+			strerror(errno));
+		goto error;
+	}
+	addr = mmap(NULL, end_addr - phys_addr + 1, PROT_READ | PROT_WRITE,
+		MAP_SHARED, fd, 0);
+	close(fd);
+	if (addr == MAP_FAILED) {
+		RTE_LOG(ERR, EAL, "Cannot mmap IO port resource: %s\n",
+			strerror(errno));
+		goto error;
+	}
+
+	/* strangely, the base address is mmap addr + phys_addr */
+	p->base = (uintptr_t)addr;
+	p->len = end_addr - phys_addr + 1;
+	RTE_LOG(INFO, EAL, "PCI Port IO found start=0x%"PRIx64 " len %"PRIx64 "\n", p->base,p->len);
+	fclose(f);
+
+	return 0;
+
+error:
+	fclose(f);
+	return -1;
+}
+int pci_uio_ioport_map(struct rte_pci_device *dev, int bar,
+		   struct rte_pci_ioport *p)
+{
+	int rtn;
+	uint64_t flags;
+
+	rtn = pci_uio_ioport_flags(dev,bar,&flags);
+	if(rtn){
+		RTE_LOG(ERR, EAL, "Cannot get iport flags\n");
+		return -1;
+	}
+
+	if(flags&IORESOURCE_IO){
+		rtn = pci_uio_ioport_iobar(dev,bar,p);
+		if(!rtn){
+			p->membar = 0;
+		}
+		
+		return rtn;
+	}
+
+	if(flags&IORESOURCE_MEM){
+		rtn = pci_uio_ioport_membar(dev,bar,p);
+		if(!rtn){
+			p->membar = 1;
+		}
+
+		return rtn;
+	}
+
+	RTE_LOG(ERR, EAL, "failed to map ioport\n");
+	return -1;
 }
 #else
 int
@@ -500,21 +640,33 @@ pci_uio_ioport_read(struct rte_pci_ioport *p,
 		if (len >= 4) {
 			size = 4;
 #if defined(RTE_ARCH_X86)
+		if(IOPORT_MEMBAR(p)){
+			*(uint32_t *)d = *(volatile uint32_t *)reg;
+		}else{
 			*(uint32_t *)d = inl(reg);
+		}
 #else
 			*(uint32_t *)d = *(volatile uint32_t *)reg;
 #endif
 		} else if (len >= 2) {
 			size = 2;
 #if defined(RTE_ARCH_X86)
+		if(IOPORT_MEMBAR(p)){
+			*(uint16_t *)d = *(volatile uint16_t *)reg;
+		}else{
 			*(uint16_t *)d = inw(reg);
+		}
 #else
 			*(uint16_t *)d = *(volatile uint16_t *)reg;
 #endif
 		} else {
 			size = 1;
 #if defined(RTE_ARCH_X86)
+		if(IOPORT_MEMBAR(p)){
+			*d = *(volatile uint8_t *)reg;
+		}else{
 			*d = inb(reg);
+		}
 #else
 			*d = *(volatile uint8_t *)reg;
 #endif
@@ -534,21 +686,33 @@ pci_uio_ioport_write(struct rte_pci_ioport *p,
 		if (len >= 4) {
 			size = 4;
 #if defined(RTE_ARCH_X86)
+		if(IOPORT_MEMBAR(p)){
+			*(volatile uint32_t *)reg = *(const uint32_t *)s;
+		}else{
 			outl_p(*(const uint32_t *)s, reg);
+		}
 #else
 			*(volatile uint32_t *)reg = *(const uint32_t *)s;
 #endif
 		} else if (len >= 2) {
 			size = 2;
 #if defined(RTE_ARCH_X86)
+		if(IOPORT_MEMBAR(p)){
+			*(volatile uint16_t *)reg = *(const uint16_t *)s;
+		}else{
 			outw_p(*(const uint16_t *)s, reg);
+		}
 #else
 			*(volatile uint16_t *)reg = *(const uint16_t *)s;
 #endif
 		} else {
 			size = 1;
 #if defined(RTE_ARCH_X86)
+		if(IOPORT_MEMBAR(p)){
+			*(volatile uint8_t *)reg = *s;
+		}else{
 			outb_p(*s, reg);
+		}
 #else
 			*(volatile uint8_t *)reg = *s;
 #endif
@@ -560,9 +724,13 @@ int
 pci_uio_ioport_unmap(struct rte_pci_ioport *p)
 {
 #if defined(RTE_ARCH_X86)
-	RTE_SET_USED(p);
-	/* FIXME close intr fd ? */
-	return 0;
+	if(IOPORT_MEMBAR(p)){
+		return munmap((void *)(uintptr_t)p->base, p->len);
+	}else{
+		RTE_SET_USED(p);
+		/* FIXME close intr fd ? */
+		return 0;
+	}
 #else
 	return munmap((void *)(uintptr_t)p->base, p->len);
 #endif

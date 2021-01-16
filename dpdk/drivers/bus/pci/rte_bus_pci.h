@@ -294,7 +294,10 @@ struct rte_pci_ioport {
 	struct rte_pci_device *dev;
 	uint64_t base;
 	uint64_t len; /* only filled for memory mapped ports */
+
+	int membar; /* virtio0.95 bar0 is membar instead of iobar  */
 };
+#define IOPORT_MEMBAR(io)  ((io)->membar)
 
 /**
  * Initialize a rte_pci_ioport object for a pci device io resource.
