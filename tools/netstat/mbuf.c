@@ -164,6 +164,9 @@ mbpr(void *kvmd, u_long mbaddr)
 	cluster_sleeps = memstat_get_sleeps(mtp);
 	cluster_size = memstat_get_size(mtp);
 
+#ifdef FSTACK
+	tag_bytes = 0;
+#else
 	mtp = memstat_mtl_find(mtlp, ALLOCATOR_MALLOC, MBUF_TAG_MEM_NAME);
 	if (mtp == NULL) {
 		xo_warnx("memstat_mtl_find: malloc type %s not found",
@@ -171,6 +174,7 @@ mbpr(void *kvmd, u_long mbaddr)
 		goto out;
 	}
 	tag_bytes = memstat_get_bytes(mtp);
+#endif
 
 	mtp = memstat_mtl_find(mtlp, ALLOCATOR_UMA, MBUF_JUMBOP_MEM_NAME);
 	if (mtp == NULL) {

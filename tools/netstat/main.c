@@ -264,7 +264,7 @@ main(int argc, char *argv[])
 #ifndef FSTACK
 	while ((ch = getopt(argc, argv, "46AaBbdF:f:ghI:iLlM:mN:np:Qq:RrSTsuWw:xz"))
 #else
-	while ((ch = getopt(argc, argv, "46AaBbdF:f:ghI:iLlnp:Qq:RrSTsuWw:xzP:"))
+	while ((ch = getopt(argc, argv, "46AaBbdF:f:ghI:iLlmnp:Qq:RrSTsuWw:xzP:"))
 #endif
 	    != -1)
 		switch(ch) {
@@ -350,7 +350,6 @@ main(int argc, char *argv[])
 		case 'L':
 			Lflag = 1;
 			break;
-#ifndef FSTACK
 		case 'M':
 			memf = optarg;
 			break;
@@ -360,7 +359,6 @@ main(int argc, char *argv[])
 		case 'N':
 			nlistf = optarg;
 			break;
-#endif
 		case 'n':
 			numeric_addr = numeric_port = 1;
 			break;
