@@ -2068,6 +2068,7 @@ virtio_dev_configure(struct rte_eth_dev *dev)
 	PMD_INIT_LOG(DEBUG, "configure");
 	req_features = VIRTIO_PMD_DEFAULT_GUEST_FEATURES;
 
+#if 0
 	if (rxmode->mq_mode != ETH_MQ_RX_NONE) {
 		PMD_DRV_LOG(ERR,
 			"Unsupported Rx multi queue mode %d",
@@ -2081,6 +2082,7 @@ virtio_dev_configure(struct rte_eth_dev *dev)
 			txmode->mq_mode);
 		return -EINVAL;
 	}
+#endif
 
 	if (dev->data->dev_conf.intr_conf.rxq) {
 		ret = virtio_init_device(dev, hw->req_guest_features);
